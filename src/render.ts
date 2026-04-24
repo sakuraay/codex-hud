@@ -1,4 +1,4 @@
-import { RESET, bar, blue, bold, cyan, dim, green, magenta, percentColor, red, yellow } from './colors.js';
+import { RESET, bar, cyan, dim, green, percentColor, red, yellow } from './colors.js';
 import type { HudConfig, HudSnapshot, ToolActivity } from './types.js';
 
 function formatTokens(value: number): string {
@@ -23,17 +23,6 @@ function formatRemaining(to?: Date): string {
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
-function formatWindow(windowMinutes?: number): string {
-  if (windowMinutes === undefined || windowMinutes <= 0) return '?';
-  if (windowMinutes % (24 * 60) === 0) {
-    return `${windowMinutes / (24 * 60)}d`;
-  }
-  if (windowMinutes % 60 === 0) {
-    return `${windowMinutes / 60}h`;
-  }
-  return `${windowMinutes}m`;
-}
-
 function detectStatusWidth(): number {
   const envWidth = Number.parseInt(process.env.CODEX_HUD_WIDTH ?? process.env.COLUMNS ?? '', 10);
   if (!Number.isNaN(envWidth) && envWidth > 0) return envWidth;
@@ -50,15 +39,16 @@ function shortenModel(model: string): string {
     .replace(/\s+/g, '');
 }
 
-function modelTier(model: string): string {
-  if (model.toLowerCase().includes('spark')) return 'Spark';
-  return 'Max';
-}
-
 function projectFromCwd(cwd?: string): string {
   if (!cwd) return 'project';
   const parts = cwd.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || 'project';
+}
+
+function renderRate(label: string, usedPercent?: number): string {
+  if (usedPercent === undefined) return `${label} --`;
+  const percent = Math.round(usedPercent);
+  return `${label} ${percentColor(percent)(bar(percent, 4))} ${percentColor(percent)(`${percent}%`)}`;
 }
 
 function trimToWidth(text: string, width: number): string {
@@ -173,42 +163,17 @@ export function render(snapshot: HudSnapshot, config: HudConfig): string[] {
 export function renderTmuxLine(snapshot: HudSnapshot): string {
   const modelRaw = snapshot.model ?? 'unknown-model';
   const modelShort = shortenModel(modelRaw);
-  const badge = cyan(`[${modelShort} | ${modelTier(modelRaw)}]`);
+  const badge = cyan(`[${modelShort}]`);
   const width = detectStatusWidth();
   const project = projectFromCwd(snapshot.cwd);
   const git = snapshot.gitBranch ? `git:(${snapshot.gitBranch}${snapshot.gitDirty ? '*' : ''})` : '';
-  const repoPart = git ? `${project} ${git}` : project;
-
-  const p = snapshot.ratePrimary ? Math.round(snapshot.ratePrimary.usedPercent) : undefined;
-  const pRemain = snapshot.ratePrimary ? (formatRemaining(snapshot.ratePrimary.resetsAt) || '--') : '--';
-  const pWin = snapshot.ratePrimary ? formatWindow(snapshot.ratePrimary.windowMinutes) : '?';
-  const s = snapshot.rateSecondary ? Math.round(snapshot.rateSecondary.usedPercent) : undefined;
-  const sRemain = snapshot.rateSecondary ? (formatRemaining(snapshot.rateSecondary.resetsAt) || '--') : '--';
-  const sWin = snapshot.rateSecondary ? formatWindow(snapshot.rateSecondary.windowMinutes) : '?';
-
-  let line: string;
-  if (width >= 135) {
-    const usageLabel = blue('Usage');
-    const u5 = p !== undefined
-      ? `${usageLabel} ${percentColor(p)(bar(p, 8))} ${percentColor(p)(`${p}%`)} (${blue(pRemain)} / ${magenta(pWin)})`
-      : 'Usage --';
-    const u7 = s !== undefined
-      ? `${percentColor(s)(bar(s, 6))} ${percentColor(s)(`${s}%`)} (${blue(sRemain)} / ${magenta(sWin)})`
-      : '';
-    line = [badge, blue(repoPart), u5, u7].filter(Boolean).join(' | ');
-  } else if (width >= 105) {
-    const u5 = p !== undefined
-      ? `U5 ${percentColor(p)(bar(p, 6))} ${percentColor(p)(`${p}%`)} (${blue(pRemain)})`
-      : 'U5 --';
-    const u7 = s !== undefined
-      ? `U7 ${percentColor(s)(bar(s, 5))} ${percentColor(s)(`${s}%`)} (${blue(sRemain)})`
-      : '';
-    line = [badge, magenta(repoPart), u5, u7].filter(Boolean).join(' | ');
-  } else {
-    const u5 = p !== undefined ? `U5 ${percentColor(p)(`${p}%`)}` : 'U5 --';
-    const u7 = s !== undefined ? `U7 ${percentColor(s)(`${s}%`)}` : '';
-    line = [badge, blue(project), u5, u7].filter(Boolean).join(' | ');
-  }
+  const location = git ? `${project} ${git}` : project;
+  const line = [
+    badge,
+    location,
+    renderRate('5h', snapshot.ratePrimary?.usedPercent),
+    renderRate('7d', snapshot.rateSecondary?.usedPercent),
+  ].join(' | ');
 
   return trimToWidth(line, width);
 }

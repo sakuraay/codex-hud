@@ -4,6 +4,14 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATCH_FILE="$REPO_DIR/patches/codex-statusline-command.patch"
 INSTALL_BIN_DIR="$HOME/.local/bin"
+CODEX_VENDOR_DIR="${CODEX_HUD_VENDOR_DIR:-$HOME/.codex-hud/vendor/openai-codex}"
+CODEX_CACHE_DIR="${CODEX_HUD_CACHE_DIR:-$HOME/.codex-hud/cache}"
+CODEX_UPSTREAM_URL="https://github.com/openai/codex"
+CODEX_UPSTREAM_COMMIT="1dc3535e17666884800ada37d7eb94cf974d38fe"
+WEBRTC_URL="https://github.com/livekit/rust-sdks/releases/download/webrtc-24f6822-2/webrtc-mac-arm64-release.zip"
+RUSTY_V8_URL="https://github.com/denoland/rusty_v8/releases/download/v146.4.0/librusty_v8_release_aarch64-apple-darwin.a.gz"
+WEBRTC_DIR="${HOME}/.codex-hud/webrtc-prebuilt/mac-arm64-release"
+RUSTY_V8_ARCHIVE="${CODEX_CACHE_DIR}/librusty_v8_release_aarch64-apple-darwin.a.gz"
 
 print_step() {
   printf '\n[install] %s\n' "$1"
@@ -20,6 +28,14 @@ ensure_command() {
   if ! command -v "$cmd" >/dev/null 2>&1; then
     fatal "$hint"
   fi
+}
+
+download_file() {
+  local url="$1"
+  local target="$2"
+
+  mkdir -p "$(dirname "$target")"
+  curl -L --fail "$url" -o "$target"
 }
 
 ensure_rust_toolchain() {
@@ -87,6 +103,49 @@ ensure_linux_build_deps() {
   pkg-config --exists libseccomp || fatal "libseccomp not visible via pkg-config after dependency install"
 }
 
+ensure_macos_build_assets() {
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    return 0
+  fi
+
+  if [[ "$(uname -m)" != "arm64" ]]; then
+    fatal "The verified macOS build target is Apple Silicon (arm64)."
+  fi
+
+  ensure_command curl "curl is required to download macOS build assets"
+  ensure_command unzip "unzip is required to unpack the macOS WebRTC archive"
+
+  if [[ ! -d "$WEBRTC_DIR" ]]; then
+    local zip_path="${CODEX_CACHE_DIR}/webrtc-mac-arm64-release.zip"
+    local extract_root
+
+    print_step "Downloading WebRTC prebuilt for macOS arm64"
+    download_file "$WEBRTC_URL" "$zip_path"
+
+    extract_root="$(mktemp -d)"
+    unzip -q "$zip_path" -d "$extract_root"
+    mkdir -p "$(dirname "$WEBRTC_DIR")"
+    rm -rf "$WEBRTC_DIR"
+    mv "$extract_root/mac-arm64-release" "$WEBRTC_DIR"
+    rmdir "$extract_root"
+  fi
+
+  if [[ ! -f "$RUSTY_V8_ARCHIVE" ]]; then
+    print_step "Downloading rusty_v8 archive for macOS arm64"
+    download_file "$RUSTY_V8_URL" "$RUSTY_V8_ARCHIVE"
+  fi
+}
+
+prepare_cargo_env() {
+  export CARGO_NET_GIT_FETCH_WITH_CLI=true
+
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    ensure_macos_build_assets
+    export LK_CUSTOM_WEBRTC="$WEBRTC_DIR"
+    export RUSTY_V8_ARCHIVE="$RUSTY_V8_ARCHIVE"
+  fi
+}
+
 ensure_local_bin_precedence() {
   mkdir -p "$INSTALL_BIN_DIR"
   export PATH="$INSTALL_BIN_DIR:$PATH"
@@ -97,9 +156,7 @@ ensure_local_bin_precedence() {
   local rc_files=("$HOME/.bashrc" "$HOME/.zshrc")
 
   for rc in "${rc_files[@]}"; do
-    if [[ ! -f "$rc" ]]; then
-      continue
-    fi
+    [[ -f "$rc" ]] || touch "$rc"
     if grep -Fq "$marker_start" "$rc"; then
       continue
     fi
@@ -112,42 +169,29 @@ ensure_local_bin_precedence() {
   done
 }
 
-is_codex_repo() {
-  local p="$1"
-  [[ -d "$p/.git" && -f "$p/codex-rs/Cargo.toml" && -f "$p/README.md" ]]
-}
-
-find_codex_repo() {
-  local candidates=(
-    "$REPO_DIR/_upstream/openai-codex"
-    "$REPO_DIR/openai-codex"
-    "$HOME/openai-codex"
-    "$HOME/codex"
-    "$HOME/src/openai-codex"
-    "$HOME/.codex-hud/vendor/openai-codex"
-  )
-
-  for c in "${candidates[@]}"; do
-    if is_codex_repo "$c"; then
-      echo "$c"
-      return 0
-    fi
-  done
-
-  return 1
-}
-
 ensure_codex_repo() {
-  if find_codex_repo >/dev/null 2>&1; then
-    find_codex_repo
+  mkdir -p "$(dirname "$CODEX_VENDOR_DIR")"
+
+  if [[ ! -d "$CODEX_VENDOR_DIR/.git" ]]; then
+    print_step "Cloning openai/codex into $CODEX_VENDOR_DIR"
+    git clone "$CODEX_UPSTREAM_URL" "$CODEX_VENDOR_DIR"
+  fi
+
+  local current_head=""
+  current_head="$(git -C "$CODEX_VENDOR_DIR" rev-parse HEAD 2>/dev/null || true)"
+  if [[ "$current_head" == "$CODEX_UPSTREAM_COMMIT" ]]; then
+    echo "$CODEX_VENDOR_DIR"
     return 0
   fi
 
-  local target="$HOME/.codex-hud/vendor/openai-codex"
-  print_step "openai/codex source not found. Cloning to $target"
-  mkdir -p "$(dirname "$target")"
-  git clone --depth 1 https://github.com/openai/codex "$target"
-  echo "$target"
+  if [[ -n "$(git -C "$CODEX_VENDOR_DIR" status --short)" ]]; then
+    fatal "Vendor repo at $CODEX_VENDOR_DIR has local changes. Clean it or remove the directory, then rerun."
+  fi
+
+  print_step "Checking out pinned openai/codex commit $CODEX_UPSTREAM_COMMIT"
+  git -C "$CODEX_VENDOR_DIR" fetch --depth 1 origin "$CODEX_UPSTREAM_COMMIT"
+  git -C "$CODEX_VENDOR_DIR" checkout --detach "$CODEX_UPSTREAM_COMMIT"
+  echo "$CODEX_VENDOR_DIR"
 }
 
 apply_patch_if_needed() {
@@ -181,6 +225,7 @@ build_patched_codex_binary() {
 
   ensure_rust_toolchain
   ensure_linux_build_deps
+  prepare_cargo_env
 
   print_step "Building patched Codex binary"
   cd "$codex_repo/codex-rs"
@@ -202,8 +247,7 @@ build_patched_codex_binary() {
 
   local built="$codex_repo/codex-rs/target/release/codex"
   if [[ ! -x "$built" ]]; then
-    echo "Patched codex binary not found at $built"
-    return 1
+    fatal "Patched codex binary not found at $built"
   fi
 
   local target="$INSTALL_BIN_DIR/codex"
@@ -228,8 +272,7 @@ main() {
   ensure_command git "git is required (install git first)"
 
   if [[ ! -f "$PATCH_FILE" ]]; then
-    echo "Patch file missing: $PATCH_FILE"
-    exit 1
+    fatal "Patch file missing: $PATCH_FILE"
   fi
 
   local codex_repo

@@ -1,6 +1,12 @@
-# Keep this repo focused on Codex-HUD files.
-*
-!.gitignore
-!README.md
-!Codex-HUD/
-!Codex-HUD/**
+node_modules/
+dist/
+_upstream/
+.DS_Store
+AGENT.MD
+AGENTS.md
+*.log
+*.tmp
+*.swp
+.env
+.env.*
+1.png
