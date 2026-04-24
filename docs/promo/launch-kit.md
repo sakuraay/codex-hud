@@ -27,13 +27,13 @@ It parses Codex rollout logs and renders a status line with:
 
 Install:
 ```bash
-git clone https://github.com/anhannin/codex-hud.git
-cd codex-hud/Codex-HUD
+git clone https://github.com/sakuraay/codex-hud.git
+cd codex-hud
 ./install.sh
 ```
 
 Repo:
-https://github.com/anhannin/codex-hud
+https://github.com/sakuraay/codex-hud
 
 Feedback on reliability, parsing edge cases, and UI readability is very welcome.
 
@@ -61,12 +61,12 @@ Highlights:
 - Spark-aware rate window selection
 
 Repo:
-https://github.com/anhannin/codex-hud
+https://github.com/sakuraay/codex-hud
 
 Quick install:
 ```bash
-git clone https://github.com/anhannin/codex-hud.git
-cd codex-hud/Codex-HUD
+git clone https://github.com/sakuraay/codex-hud.git
+cd codex-hud
 ./install.sh
 ```
 
@@ -76,7 +76,7 @@ I would appreciate feedback on usability and portability across Linux setups.
 I open-sourced Codex HUD: a Claude-HUD style status line for Codex CLI.
 Model + Git + 5h/7d usage at a glance, directly in terminal sessions.
 
-Repo: https://github.com/anhannin/codex-hud
+Repo: https://github.com/sakuraay/codex-hud
 
 ## Post-Publish Checklist
 - Add one screenshot or short GIF

@@ -6,12 +6,20 @@ PATCH_FILE="$REPO_DIR/patches/codex-statusline-command.patch"
 INSTALL_BIN_DIR="$HOME/.local/bin"
 CODEX_VENDOR_DIR="${CODEX_HUD_VENDOR_DIR:-$HOME/.codex-hud/vendor/openai-codex}"
 CODEX_CACHE_DIR="${CODEX_HUD_CACHE_DIR:-$HOME/.codex-hud/cache}"
+CODEX_RELEASES_DIR="${CODEX_HUD_RELEASES_DIR:-$HOME/.codex-hud/releases}"
 CODEX_UPSTREAM_URL="https://github.com/openai/codex"
 CODEX_UPSTREAM_COMMIT="1dc3535e17666884800ada37d7eb94cf974d38fe"
+GITHUB_OWNER="sakuraay"
+GITHUB_REPO="codex-hud"
+RELEASE_ASSET_NAME="codex-hud-macos-arm64-release.tar.gz"
 WEBRTC_URL="https://github.com/livekit/rust-sdks/releases/download/webrtc-24f6822-2/webrtc-mac-arm64-release.zip"
 RUSTY_V8_URL="https://github.com/denoland/rusty_v8/releases/download/v146.4.0/librusty_v8_release_aarch64-apple-darwin.a.gz"
 WEBRTC_DIR="${HOME}/.codex-hud/webrtc-prebuilt/mac-arm64-release"
+WEBRTC_ARCHIVE="${CODEX_CACHE_DIR}/webrtc-mac-arm64-release.zip"
 RUSTY_V8_ARCHIVE="${CODEX_CACHE_DIR}/librusty_v8_release_aarch64-apple-darwin.a.gz"
+
+RELEASE_VERSION=""
+PREFER_SOURCE=0
 
 print_step() {
   printf '\n[install] %s\n' "$1"
@@ -36,6 +44,19 @@ download_file() {
 
   mkdir -p "$(dirname "$target")"
   curl -L --fail "$url" -o "$target"
+}
+
+release_asset_url() {
+  local version="$1"
+
+  if [[ -n "$version" ]]; then
+    printf 'https://github.com/%s/%s/releases/download/%s/%s\n' \
+      "$GITHUB_OWNER" "$GITHUB_REPO" "$version" "$RELEASE_ASSET_NAME"
+    return 0
+  fi
+
+  printf 'https://github.com/%s/%s/releases/latest/download/%s\n' \
+    "$GITHUB_OWNER" "$GITHUB_REPO" "$RELEASE_ASSET_NAME"
 }
 
 ensure_rust_toolchain() {
@@ -116,14 +137,20 @@ ensure_macos_build_assets() {
   ensure_command unzip "unzip is required to unpack the macOS WebRTC archive"
 
   if [[ ! -d "$WEBRTC_DIR" ]]; then
-    local zip_path="${CODEX_CACHE_DIR}/webrtc-mac-arm64-release.zip"
     local extract_root
 
-    print_step "Downloading WebRTC prebuilt for macOS arm64"
-    download_file "$WEBRTC_URL" "$zip_path"
+    if [[ ! -f "$WEBRTC_ARCHIVE" && -f "/tmp/webrtc-mac-arm64-release.zip" ]]; then
+      mkdir -p "$(dirname "$WEBRTC_ARCHIVE")"
+      cp "/tmp/webrtc-mac-arm64-release.zip" "$WEBRTC_ARCHIVE"
+    fi
+
+    if [[ ! -f "$WEBRTC_ARCHIVE" ]]; then
+      print_step "Downloading WebRTC prebuilt for macOS arm64"
+      download_file "$WEBRTC_URL" "$WEBRTC_ARCHIVE"
+    fi
 
     extract_root="$(mktemp -d)"
-    unzip -q "$zip_path" -d "$extract_root"
+    unzip -q "$WEBRTC_ARCHIVE" -d "$extract_root"
     mkdir -p "$(dirname "$WEBRTC_DIR")"
     rm -rf "$WEBRTC_DIR"
     mv "$extract_root/mac-arm64-release" "$WEBRTC_DIR"
@@ -131,8 +158,13 @@ ensure_macos_build_assets() {
   fi
 
   if [[ ! -f "$RUSTY_V8_ARCHIVE" ]]; then
-    print_step "Downloading rusty_v8 archive for macOS arm64"
-    download_file "$RUSTY_V8_URL" "$RUSTY_V8_ARCHIVE"
+    if [[ -f "/tmp/librusty_v8_release_aarch64-apple-darwin.a.gz" ]]; then
+      mkdir -p "$(dirname "$RUSTY_V8_ARCHIVE")"
+      cp "/tmp/librusty_v8_release_aarch64-apple-darwin.a.gz" "$RUSTY_V8_ARCHIVE"
+    else
+      print_step "Downloading rusty_v8 archive for macOS arm64"
+      download_file "$RUSTY_V8_URL" "$RUSTY_V8_ARCHIVE"
+    fi
   fi
 }
 
@@ -167,6 +199,88 @@ ensure_local_bin_precedence() {
       echo "$marker_end"
     } >> "$rc"
   done
+}
+
+backup_existing_codex() {
+  local target="$INSTALL_BIN_DIR/codex"
+
+  if [[ -x "$target" && ! -L "$target" ]]; then
+    local backup="$INSTALL_BIN_DIR/codex.backup.$(date +%Y%m%d%H%M%S)"
+    cp "$target" "$backup"
+    print_step "Backed up existing codex binary to $backup"
+  fi
+}
+
+install_patched_codex_binary() {
+  local built="$1"
+  local target="$INSTALL_BIN_DIR/codex"
+
+  if [[ ! -x "$built" ]]; then
+    fatal "Patched codex binary not found at $built"
+  fi
+
+  mkdir -p "$INSTALL_BIN_DIR"
+  backup_existing_codex
+  cp "$built" "$target"
+  chmod +x "$target"
+  print_step "Installed patched codex to $target"
+
+  ensure_local_bin_precedence
+  hash -r
+}
+
+install_release_asset() {
+  local asset_dir="$1"
+  local version_file="$asset_dir/VERSION"
+  local binary_path="$asset_dir/bin/codex"
+
+  [[ -f "$version_file" ]] || fatal "Release asset is missing VERSION"
+  [[ -x "$binary_path" ]] || fatal "Release asset is missing bin/codex"
+  [[ -d "$asset_dir/dist" ]] || fatal "Release asset is missing dist/"
+  [[ -x "$asset_dir/scripts/configure-codex-statusline.sh" ]] || fatal "Release asset is missing configure script"
+
+  install_patched_codex_binary "$binary_path"
+
+  print_step "Configuring ~/.codex/config.toml"
+  "$asset_dir/scripts/configure-codex-statusline.sh" --repo-dir "$asset_dir"
+}
+
+download_and_install_release_asset() {
+  local version="$1"
+  local archive_path="${CODEX_CACHE_DIR}/${RELEASE_ASSET_NAME}"
+  local download_url
+  local extract_root
+  local extracted_dir
+  local version_file
+  local resolved_version
+  local final_dir
+
+  ensure_command curl "curl is required to download release assets"
+  ensure_command tar "tar is required to extract release assets"
+
+  download_url="$(release_asset_url "$version")"
+  print_step "Downloading macOS arm64 release asset from $download_url"
+  download_file "$download_url" "$archive_path"
+
+  extract_root="$(mktemp -d)"
+  tar -xzf "$archive_path" -C "$extract_root"
+
+  extracted_dir="$(find "$extract_root" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  [[ -n "$extracted_dir" ]] || fatal "Release asset archive was empty"
+
+  version_file="$extracted_dir/VERSION"
+  [[ -f "$version_file" ]] || fatal "Release asset archive did not contain VERSION"
+  resolved_version="$(tr -d '\n' < "$version_file")"
+  [[ -n "$resolved_version" ]] || fatal "Release asset VERSION was empty"
+
+  final_dir="${CODEX_RELEASES_DIR}/${resolved_version}"
+  mkdir -p "$CODEX_RELEASES_DIR"
+  rm -rf "$final_dir"
+  mv "$extracted_dir" "$final_dir"
+  rm -rf "$extract_root"
+
+  install_release_asset "$final_dir"
+  print_step "Installed release asset version $resolved_version"
 }
 
 ensure_codex_repo() {
@@ -246,33 +360,58 @@ build_patched_codex_binary() {
   rm -f "$build_log"
 
   local built="$codex_repo/codex-rs/target/release/codex"
-  if [[ ! -x "$built" ]]; then
-    fatal "Patched codex binary not found at $built"
-  fi
-
-  local target="$INSTALL_BIN_DIR/codex"
-  mkdir -p "$INSTALL_BIN_DIR"
-
-  if [[ -x "$target" && ! -L "$target" ]]; then
-    local backup="$INSTALL_BIN_DIR/codex.backup.$(date +%Y%m%d%H%M%S)"
-    cp "$target" "$backup"
-    print_step "Backed up existing codex binary to $backup"
-  fi
-
-  cp "$built" "$target"
-  chmod +x "$target"
-  print_step "Installed patched codex to $target"
-
-  ensure_local_bin_precedence
-  hash -r
+  install_patched_codex_binary "$built"
 }
 
 main() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --version)
+        RELEASE_VERSION="$2"
+        shift 2
+        ;;
+      --prefer-source)
+        PREFER_SOURCE=1
+        shift
+        ;;
+      --help|-h)
+        cat <<'USAGE'
+Usage: ./install.sh [--version <tag>] [--prefer-source]
+
+Default behavior on macOS arm64:
+  1. Download the release asset for the requested tag, or the latest release.
+  2. Install the bundled patched codex binary and HUD dist.
+  3. Fall back to source build if the release asset is unavailable.
+
+Options:
+  --version <tag>   Install a specific release tag such as v0.1.0.
+  --prefer-source   Skip release assets and build from source directly.
+USAGE
+        exit 0
+        ;;
+      *)
+        fatal "Unknown argument: $1"
+        ;;
+    esac
+  done
+
   print_step "Starting one-shot install"
   ensure_command git "git is required (install git first)"
 
   if [[ ! -f "$PATCH_FILE" ]]; then
     fatal "Patch file missing: $PATCH_FILE"
+  fi
+
+  if [[ "$PREFER_SOURCE" -eq 0 && "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
+    if ( download_and_install_release_asset "$RELEASE_VERSION" ); then
+      print_step "Done"
+      echo "Patched codex installed at: $INSTALL_BIN_DIR/codex"
+      echo "Run Codex normally: codex"
+      echo "HUD command wired in ~/.codex/config.toml via [tui].status_line_command"
+      return 0
+    fi
+
+    print_step "Release asset install failed, falling back to source build"
   fi
 
   local codex_repo
@@ -297,4 +436,6 @@ main() {
   echo "HUD command wired in ~/.codex/config.toml via [tui].status_line_command"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

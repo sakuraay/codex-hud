@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag to build, such as v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  build-release:
+    needs: test
+    runs-on: macos-15
+    env:
+      RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Ensure Rust
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl https://sh.rustup.rs -sSf | sh -s -- -y
+          fi
+          source "$HOME/.cargo/env"
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Build release assets
+        run: |
+          source "$HOME/.cargo/env"
+          chmod +x install.sh scripts/package-release.sh scripts/configure-codex-statusline.sh
+          scripts/package-release.sh --version "$RELEASE_VERSION"
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$RELEASE_VERSION" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_VERSION" \
+              --title "$RELEASE_VERSION" \
+              --notes "Automated release for $RELEASE_VERSION" \
+              --target "${GITHUB_SHA}"
+          gh release upload "$RELEASE_VERSION" \
+            build/codex-hud-dist.tar.gz \
+            build/codex-hud-macos-arm64-release.tar.gz \
+            --clobber
