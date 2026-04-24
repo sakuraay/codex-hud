@@ -22,7 +22,7 @@ RELEASE_VERSION=""
 PREFER_SOURCE=0
 
 print_step() {
-  printf '\n[install] %s\n' "$1"
+  printf '\n[install] %s\n' "$1" >&2
 }
 
 fatal() {
